@@ -96,6 +96,9 @@ struct TransferMetric {
         std::stringstream ss;
         ss << "count=" << total_count;
 
+        double avg = hist.sum() / static_cast<double>(hist.count());
+        ss << ", avg=" << avg << "μs";
+
         // Find P95
         int64_t p95_target = (total_count * 95) / 100;
         int64_t cumulative = 0;
@@ -194,6 +197,11 @@ struct MasterClientMetric {
 
             found_any = true;
             ss << rpc_name << ": count=" << total_count;
+
+            // print average
+            ss << ", avg=" << (rpc_latency.sum(label_array) /
+                               static_cast<double>(total_count))
+               << "μs";
 
             // Find P95
             int64_t p95_target = (total_count * 95) / 100;
