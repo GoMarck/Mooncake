@@ -1949,6 +1949,7 @@ tl::expected<void, ErrorCode> RealClient::put_internal(
     const std::string &key, std::span<const char> value,
     const ReplicateConfig &config,
     const std::shared_ptr<ClientBufferAllocator> &client_buffer_allocator) {
+    kvtest_profile::Span benchmark_phase(kvtest_profile::Stage::MC_PUT_PREPARE);
     if (config.prefer_alloc_in_same_node) {
         LOG(ERROR) << "prefer_alloc_in_same_node is not supported.";
         return tl::unexpected(ErrorCode::INVALID_PARAMS);
@@ -1961,6 +1962,7 @@ tl::expected<void, ErrorCode> RealClient::put_internal(
         LOG(ERROR) << "Client buffer allocator is not provided";
         return tl::unexpected(ErrorCode::INVALID_PARAMS);
     }
+    benchmark_phase.Finish(true);
     kvtest_profile::Span benchmark_alloc(kvtest_profile::Stage::MC_PUT_ALLOC, value.size_bytes());
     auto alloc_result = client_buffer_allocator->allocate(value.size_bytes());
     benchmark_alloc.Finish(alloc_result.has_value());
@@ -1978,9 +1980,12 @@ tl::expected<void, ErrorCode> RealClient::put_internal(
         return tl::unexpected(scatter_result.error());
     }
 
+    benchmark_phase.Next(kvtest_profile::Stage::MC_PUT_PREPARE);
     std::vector<Slice> slices = split_into_slices(buffer_handle);
 
+    benchmark_phase.Next(kvtest_profile::Stage::MC_PUT_CLIENT_PUT);
     auto put_result = client_->Put(key, slices, config);
+    benchmark_phase.Next(kvtest_profile::Stage::MC_PUT_RESULT);
     if (!put_result) {
         return tl::unexpected(put_result.error());
     }
@@ -2822,6 +2827,7 @@ tl::expected<void, ErrorCode> RealClient::unregister_shm_buffer_internal(
 std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
     const std::string &key,
     const std::shared_ptr<ClientBufferAllocator> &client_buffer_allocator) {
+    kvtest_profile::Span benchmark_phase(kvtest_profile::Stage::MC_GET_PREPARE);
     if (!client_) {
         LOG(ERROR) << "Client is not initialized";
         return nullptr;
@@ -2832,7 +2838,9 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
     }
 
     // Query the object info
+    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_QUERY_CALL);
     auto query_result = client_->Query(key);
+    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_PREPARE);
     if (!query_result) {
         if (query_result.error() == ErrorCode::OBJECT_NOT_FOUND ||
             query_result.error() == ErrorCode::REPLICA_IS_NOT_READY) {
@@ -2869,6 +2877,7 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
     }
 
     // Allocate buffer
+    benchmark_phase.Finish(true);
     kvtest_profile::Span benchmark_alloc(kvtest_profile::Stage::MC_GET_ALLOC, total_length);
     auto alloc_result = client_buffer_allocator->allocate(total_length);
     benchmark_alloc.Finish(alloc_result.has_value());
@@ -2877,6 +2886,7 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
         return nullptr;
     }
 
+    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_PREPARE);
     auto buffer_handle =
         std::make_shared<BufferHandle>(std::move(*alloc_result));
 
@@ -2922,7 +2932,9 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
     std::vector<Slice> slices;
     allocateSlices(slices, replica, buffer_handle->ptr());
     auto filtered_qr = FilterQueryResult(query_result.value(), replica);
+    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_CLIENT_GET);
     auto get_result = client_->Get(key, filtered_qr, slices);
+    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_RESULT);
     if (!get_result) {
         LOG(ERROR) << "Get failed for key: " << key
                    << " with error: " << toString(get_result.error());
