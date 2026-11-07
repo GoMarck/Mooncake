@@ -1,4 +1,5 @@
 #include "client_service.h"
+#include "benchmark_profile.h"
 
 #include <boost/algorithm/string.hpp>
 #include <glog/logging.h>
@@ -4250,6 +4251,10 @@ void Client::PutToLocalFile(const std::string& key,
 ErrorCode Client::TransferData(const Replica::Descriptor& replica_descriptor,
                                std::vector<Slice>& slices,
                                TransferRequest::OpCode op_code) {
+    kvtest_profile::Span benchmark_transfer(
+        op_code == TransferRequest::READ ? kvtest_profile::Stage::MC_TE_READ
+                                        : kvtest_profile::Stage::MC_TE_WRITE,
+        kvtest_profile::Enabled() ? CalculateSliceSize(slices) : 0);
     if (!transfer_submitter_) {
         LOG(ERROR) << "TransferSubmitter not initialized";
         return ErrorCode::INVALID_PARAMS;
@@ -4276,7 +4281,11 @@ ErrorCode Client::TransferData(const Replica::Descriptor& replica_descriptor,
 
     VLOG(1) << "Using transfer strategy: " << future->strategy();
 
-    return future->get();
+    kvtest_profile::Span benchmark_wait(kvtest_profile::Stage::MC_TE_WAIT);
+    auto result = future->get();
+    benchmark_wait.Finish(result == ErrorCode::OK);
+    benchmark_transfer.Finish(result == ErrorCode::OK);
+    return result;
 }
 
 std::optional<TransferFuture> Client::SubmitRangeRead(

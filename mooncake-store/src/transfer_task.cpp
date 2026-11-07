@@ -1,4 +1,5 @@
 #include "transfer_task.h"
+#include "benchmark_profile.h"
 
 #include <glog/logging.h>
 
@@ -1225,6 +1226,7 @@ std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperation(
 
 std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperations(
     std::vector<MemcpyOperation> operations) {
+    kvtest_profile::Span benchmark_local_copy(kvtest_profile::Stage::MC_LOCAL_COPY);
     auto state = std::make_shared<MemcpyOperationState>();
     const size_t operation_count = operations.size();
     MemcpyTask task(std::move(operations), state);
@@ -1238,6 +1240,7 @@ std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperations(
 
 std::optional<TransferFuture> TransferSubmitter::submitTransfer(
     std::vector<TransferRequest>& requests) {
+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_TE_SUBMIT, 0);
     // Allocate batch ID
     const size_t batch_size = requests.size();
     BatchID batch_id = engine_.allocateBatchID(batch_size);

@@ -1,4 +1,5 @@
 #include "rpc_service.h"
+#include "benchmark_profile.h"
 
 #include <cstddef>
 #include <functional>
@@ -263,7 +264,8 @@ WrappedMasterService::GetReplicaListByRegex(const std::string& str,
 tl::expected<GetReplicaListResponse, ErrorCode>
 WrappedMasterService::GetReplicaList(const std::string& key,
                                      const std::string& tenant_id) {
-    return execute_rpc(
+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_QUERY);
+    auto benchmark_result = execute_rpc(
         "GetReplicaList",
         [&] {
             return WithRequestTenant(master_service_.IsTenantQuotaEnabled()
@@ -279,6 +281,8 @@ WrappedMasterService::GetReplicaList(const std::string& key,
         [] {
             MasterMetricManager::instance().inc_get_replica_list_failures();
         });
+    benchmark_span.Finish(benchmark_result.has_value());
+    return benchmark_result;
 }
 
 std::vector<tl::expected<GetReplicaListResponse, ErrorCode>>
@@ -366,7 +370,8 @@ WrappedMasterService::PutStart(const UUID& client_id, const std::string& key,
                                const uint64_t slice_length,
                                const ReplicateConfig& config,
                                const std::string& tenant_id) {
-    return execute_rpc(
+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_PUT_START);
+    auto benchmark_result = execute_rpc(
         "PutStart",
         [&] {
             return WithWriteTenant(tenant_id,
@@ -383,12 +388,15 @@ WrappedMasterService::PutStart(const UUID& client_id, const std::string& key,
         },
         [&] { MasterMetricManager::instance().inc_put_start_requests(); },
         [] { MasterMetricManager::instance().inc_put_start_failures(); });
+    benchmark_span.Finish(benchmark_result.has_value());
+    return benchmark_result;
 }
 
 tl::expected<void, ErrorCode> WrappedMasterService::PutEnd(
     const UUID& client_id, const ObjectMeta& object_meta,
     ReplicaType replica_type, const std::string& tenant_id) {
-    return execute_rpc(
+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_PUT_END);
+    auto benchmark_result = execute_rpc(
         "PutEnd",
         [&] {
             return WithRequestTenant(master_service_.IsTenantQuotaEnabled()
@@ -406,6 +414,8 @@ tl::expected<void, ErrorCode> WrappedMasterService::PutEnd(
         },
         [] { MasterMetricManager::instance().inc_put_end_requests(); },
         [] { MasterMetricManager::instance().inc_put_end_failures(); });
+    benchmark_span.Finish(benchmark_result.has_value());
+    return benchmark_result;
 }
 
 tl::expected<void, ErrorCode> WrappedMasterService::PutRevoke(

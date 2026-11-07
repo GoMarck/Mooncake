@@ -1,4 +1,6 @@
 #include "master_client.h"
+#include "benchmark_profile.h"
+#include <cstring>
 
 #include <async_simple/coro/FutureAwaiter.h>
 #include <async_simple/coro/Lazy.h>
@@ -349,7 +351,19 @@ tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
     }
 
     auto start_time = std::chrono::steady_clock::now();
-    return async_simple::coro::syncAwait(
+    auto benchmark_stage = kvtest_profile::Stage::COUNT;
+    if (kvtest_profile::Enabled()) {
+        const char* name = RpcNameTraits<ServiceMethod>::value;
+        if (std::strcmp(name, "PutStart") == 0) {
+            benchmark_stage = kvtest_profile::Stage::MC_RPC_PUT_START;
+        } else if (std::strcmp(name, "PutEnd") == 0) {
+            benchmark_stage = kvtest_profile::Stage::MC_RPC_PUT_END;
+        } else if (std::strcmp(name, "GetReplicaList") == 0) {
+            benchmark_stage = kvtest_profile::Stage::MC_RPC_QUERY;
+        }
+    }
+    kvtest_profile::Span benchmark_span(benchmark_stage);
+    auto benchmark_result = async_simple::coro::syncAwait(
         [&]() -> async_simple::coro::Lazy<tl::expected<ReturnType, ErrorCode>> {
             auto ret = co_await pool->send_request(
                 [&](coro_io::client_reuse_hint,
@@ -380,6 +394,8 @@ tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
             }
             co_return result->result();
         }());
+    benchmark_span.Finish(benchmark_result.has_value());
+    return benchmark_result;
 }
 
 template <auto ServiceMethod, typename ResultType, typename... Args>

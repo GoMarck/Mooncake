@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "real_client.h"
+#include "benchmark_profile.h"
 #include "registered_pinned_memory.h"
 #include "client_buffer.h"
 #include "replica_selection.h"
@@ -1960,15 +1961,19 @@ tl::expected<void, ErrorCode> RealClient::put_internal(
         LOG(ERROR) << "Client buffer allocator is not provided";
         return tl::unexpected(ErrorCode::INVALID_PARAMS);
     }
+    kvtest_profile::Span benchmark_alloc(kvtest_profile::Stage::MC_PUT_ALLOC, value.size_bytes());
     auto alloc_result = client_buffer_allocator->allocate(value.size_bytes());
+    benchmark_alloc.Finish(alloc_result.has_value());
     if (!alloc_result) {
         LOG(ERROR) << "Failed to allocate buffer for put operation, key: "
                    << key << ", value size: " << value.size();
         return tl::unexpected(ErrorCode::INVALID_PARAMS);
     }
     auto &buffer_handle = *alloc_result;
+    kvtest_profile::Span benchmark_copy(kvtest_profile::Stage::MC_COPY, value.size_bytes());
     auto scatter_result = gather_maybe_device_to_host(
         buffer_handle.ptr(), value.data(), value.size_bytes(), "put:" + key);
+    benchmark_copy.Finish(scatter_result.has_value());
     if (!scatter_result) {
         return tl::unexpected(scatter_result.error());
     }
@@ -1999,6 +2004,7 @@ tl::expected<void, ErrorCode> RealClient::put_dummy_helper(
 
 int RealClient::put(const std::string &key, std::span<const char> value,
                     const ReplicateConfig &config) {
+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_PUT, value.size_bytes());
     auto result = execute_timed_operation<tl::expected<void, ErrorCode>>(
         [&]() {
             return put_internal(key, value, config, client_buffer_allocator_);
@@ -2009,6 +2015,7 @@ int RealClient::put(const std::string &key, std::span<const char> value,
                                               "put", value.size_bytes(),
                                               latency_us);
         });
+    benchmark_span.Finish(result.has_value());
     return to_py_ret(result);
 }
 
@@ -2862,7 +2869,9 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
     }
 
     // Allocate buffer
+    kvtest_profile::Span benchmark_alloc(kvtest_profile::Stage::MC_GET_ALLOC, total_length);
     auto alloc_result = client_buffer_allocator->allocate(total_length);
+    benchmark_alloc.Finish(alloc_result.has_value());
     if (!alloc_result) {
         LOG(ERROR) << "Failed to allocate buffer for get_buffer, key: " << key;
         return nullptr;
@@ -2925,7 +2934,8 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
 
 // Implementation of get_buffer method
 std::shared_ptr<BufferHandle> RealClient::get_buffer(const std::string &key) {
-    return execute_timed_operation<std::shared_ptr<BufferHandle>>(
+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_GET);
+    auto benchmark_result = execute_timed_operation<std::shared_ptr<BufferHandle>>(
         [&]() { return get_buffer_internal(key, client_buffer_allocator_); },
         [](const auto &buffer) { return buffer != nullptr; },
         [&](uint64_t latency_us, const auto &buffer) {
@@ -2933,6 +2943,8 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer(const std::string &key) {
                                               "get_buffer", buffer->size(),
                                               latency_us);
         });
+    benchmark_span.Finish(benchmark_result != nullptr);
+    return benchmark_result;
 }
 
 tl::expected<std::tuple<uint64_t, size_t>, ErrorCode>
