@@ -1,4 +1,5 @@
 #include "master_service.h"
+#include "benchmark_profile.h"
 
 #include <algorithm>
 #include <array>
@@ -1332,7 +1333,11 @@ std::string MasterService::GetClientHostId(const UUID& client_id) const {
 
 size_t MasterService::getMetadataShardIndex(const TenantId& tenant_id,
                                             const std::string& key) const {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ROUTE_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ROUTE_LOCK_ACQUIRE);
     std::shared_lock<std::shared_mutex> lock(group_routing_mutex_);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ROUTE_GROUP_LOOKUP);
     auto it = object_group_ids_.find(tenant_id.MakeScopedKey(key));
     if (it == object_group_ids_.end()) {
         return getShardIndex(tenant_id, key);
@@ -3626,15 +3631,21 @@ auto MasterService::GetReplicaListByRegex(const std::string& regex_pattern,
 auto MasterService::GetReplicaList(const std::string& key,
                                    const TenantId& tenant_id)
     -> tl::expected<GetReplicaListResponse, ErrorCode> {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_SNAPSHOT_LOCK_ACQUIRE);
     std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_IDENTITY);
     const auto object_id = MakeObjectIdentityForRequest(key, tenant_id);
 
     GetReplicaListResponse resp({}, default_kv_lease_ttl_);
     bool promotion_eligible = false;
     bool dynamic_replication_observed = false;
     {
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_ACCESSOR);
         MetadataAccessorRO accessor(this, object_id);
 
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_VALIDATE);
         MasterMetricManager::instance().inc_total_get_nums();
 
         if (!accessor.Exists()) {
@@ -3643,6 +3654,7 @@ auto MasterService::GetReplicaList(const std::string& key,
         }
         const auto& metadata = accessor.Get();
 
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_DESCRIPTORS);
         std::vector<Replica::Descriptor> replica_list;
         metadata.VisitReplicas(
             [this](const Replica& replica) {
@@ -3681,6 +3693,7 @@ auto MasterService::GetReplicaList(const std::string& key,
         MasterMetricManager::instance().inc_valid_get_nums();
         // Grant a lease to the object so it will not be removed
         // when the client is reading it.
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_LEASE);
         auto* ts = accessor.GetTenantState();
         if (ts) {
             GrantLeaseForGroup(*ts, key, metadata);
@@ -3692,6 +3705,7 @@ auto MasterService::GetReplicaList(const std::string& key,
         // present but at least one LOCAL_DISK replica is. Decided here while
         // we hold the RO accessor; the actual enqueue happens after we
         // release the accessor below to avoid lock-upgrade complexity.
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_OPTIONAL_POLICIES);
         if (promotion_on_hit_) {
             const bool any_memory =
                 metadata.HasReplica(&Replica::fn_is_memory_replica);
@@ -4029,6 +4043,9 @@ auto MasterService::AllocateAndInsertMetadata(
     std::optional<std::chrono::system_clock::time_point>
         committed_soft_pin_timeout)
     -> tl::expected<std::vector<Replica::Descriptor>, ErrorCode> {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_TENANT_AND_CHECKS);
     const auto deadline_to_index = committed_soft_pin_timeout;
     auto& tenant_state = GetOrCreateTenantState(shard.get(), tenant_id);
     if (tenant_state.metadata.contains(key)) {
@@ -4040,6 +4057,7 @@ auto MasterService::AllocateAndInsertMetadata(
         return tl::make_unexpected(ErrorCode::OBJECT_ALREADY_EXISTS);
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_QUOTA);
     const uint64_t pending_quota_charge =
         RequestedMemoryQuotaCharge(value_length, config);
     auto quota_result =
@@ -4053,14 +4071,17 @@ auto MasterService::AllocateAndInsertMetadata(
                            pending_quota_charge);
     };
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_PREPARE);
     std::vector<Replica> replicas;
     const auto write_mode = DetermineReplicaWriteMode(config);
     size_t allocated_memory_replicas = 0;
     size_t allocated_nof_replicas = 0;
     bool has_enough_memory_segments = false;
     if (config.replica_num > 0) {
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_SEGMENT_LOCK_ACQUIRE);
         ScopedAllocatorAccess allocator_access =
             segment_manager_.getAllocatorAccess();
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_PLACEMENT);
         const auto& allocator_manager = allocator_access.getAllocatorManager();
         has_enough_memory_segments =
             allocator_manager.getNames().size() >= config.replica_num;
@@ -4095,6 +4116,7 @@ auto MasterService::AllocateAndInsertMetadata(
             }
         }
 
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_MEMORY);
         auto allocation_result = allocation_strategy_->Allocate(
             allocator_access, value_length, config.replica_num,
             preferred_segments, std::set<std::string>(), ReplicaType::MEMORY);
@@ -4123,13 +4145,16 @@ auto MasterService::AllocateAndInsertMetadata(
 #ifdef USE_NOF
     if (config.nof_replica_num > 0 &&
         nof_segment_manager_.getMountedSegmentCount() > 0) {
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_SEGMENT_LOCK_ACQUIRE);
         ScopedAllocatorAccess allocator_access =
             nof_segment_manager_.getAllocatorAccess();
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_PLACEMENT);
         const auto& allocator_manager = allocator_access.getAllocatorManager();
 
         std::vector<std::string> preferred_segments =
             config.preferred_nof_segments;
 
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_MEMORY);
         auto allocation_result = allocation_strategy_->Allocate(
             allocator_manager, value_length, config.nof_replica_num,
             preferred_segments, std::set<std::string>(), ReplicaType::NOF_SSD);
@@ -4221,6 +4246,7 @@ auto MasterService::AllocateAndInsertMetadata(
         replicas.emplace_back(std::move(*alloc), ReplicaStatus::PROCESSING);
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_DESCRIPTORS);
     std::vector<Replica::Descriptor> replica_list;
     std::vector<ReplicaID> eligible_replica_ids;
     replica_list.reserve(replicas.size());
@@ -4253,6 +4279,7 @@ auto MasterService::AllocateAndInsertMetadata(
         }
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_METADATA_INSERT);
     auto [it, inserted] = tenant_state.metadata.emplace(
         std::piecewise_construct, std::forward_as_tuple(key),
         std::forward_as_tuple(client_id, now, value_length, std::move(replicas),
@@ -4276,6 +4303,7 @@ auto MasterService::AllocateAndInsertMetadata(
             return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
         }
     }
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_SOFT_PIN);
     it->second.BeginSoftPinAction(soft_pin_request,
                                   std::move(eligible_replica_ids));
     if (deadline_to_index) {
@@ -4283,7 +4311,9 @@ auto MasterService::AllocateAndInsertMetadata(
                                         GetMetadataShardIndex(it->second),
                                         *deadline_to_index);
     }
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_GROUP_REGISTER);
     RegisterGroupMember(tenant_state, tenant_id, key, group_id);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_PROCESSING_INSERT);
     tenant_state.processing_keys.insert(key);
 
     return replica_list;
@@ -4294,6 +4324,9 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
                              const uint64_t slice_length,
                              const ReplicateConfig& config)
     -> tl::expected<std::vector<Replica::Descriptor>, ErrorCode> {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_VALIDATE);
     const auto object_id = MakeObjectIdentityForRequest(key, tenant_id);
     if ((config.replica_num == 0 && config.nof_replica_num == 0 &&
          config.dfs_replica_num == 0) ||
@@ -4370,8 +4403,10 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
     }
     const std::string group_id = group_id_result.value();
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_OBJECT_LOCK_ACQUIRE);
     [[maybe_unused]] auto object_operation_lock =
         AcquireObjectOperationLock(object_id.tenant_id, object_id.user_key);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_PREPARE);
     uint64_t quota_deficit_bytes = 0;
 
     auto attempt_once =
@@ -4380,15 +4415,22 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
         auto now = std::chrono::system_clock::now();
         std::optional<size_t> retry_shard_idx;
         {
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_CLIENT_LOCK_ACQUIRE);
             std::shared_lock<std::shared_mutex> client_lock(client_mutex_);
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_SNAPSHOT_LOCK_ACQUIRE);
             std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_CLIENTS_COPY);
             auto alive_clients = ok_client_;
             client_lock.unlock();
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_SHARD_ROUTE);
             const size_t lookup_shard_idx =
                 getMetadataShardIndex(object_id.tenant_id, object_id.user_key);
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_SHARD_LOCK_ACQUIRE);
             MetadataShardAccessorRW shard(this, lookup_shard_idx);
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_TENANT);
             auto& tenant_state =
                 GetOrCreateTenantState(shard.get(), object_id.tenant_id);
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_QUOTA);
             auto admission_result =
                 ChargeTenantQuota(GetBoundTenantQuotaHandle(tenant_state), 0);
             if (!admission_result) {
@@ -4398,7 +4440,9 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
                 return tl::make_unexpected(admission_result.error());
             }
 
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_METADATA_LOOKUP);
             auto it = tenant_state.metadata.find(key);
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_EXISTING_OR_ALLOCATE);
             if (it != tenant_state.metadata.end()) {
                 auto cleanup_plan =
                     BuildStaleHandleCleanupPlan(it->second, alive_clients);
@@ -4419,6 +4463,7 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
                         it = tenant_state.metadata.end();
                     }
                 }
+                detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_EXISTING_OR_ALLOCATE);
                 if (it != tenant_state.metadata.end()) {
                     auto& metadata = it->second;
                     if (metadata.HasReplica(&Replica::fn_is_completed) ||
@@ -4473,6 +4518,7 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
             }
         }
 
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_START_SNAPSHOT_LOCK_ACQUIRE);
         std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
         MetadataShardAccessorRW shard(this, retry_shard_idx.value());
         auto& retry_tenant_state =
@@ -4509,10 +4555,17 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
 auto MasterService::PutEnd(const UUID& client_id, const ObjectMeta& object_meta,
                            const TenantId& tenant_id, ReplicaType replica_type)
     -> tl::expected<void, ErrorCode> {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_PREPARE);
     const auto& key = object_meta.key;
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_SNAPSHOT_LOCK_ACQUIRE);
     std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_IDENTITY);
     const auto object_id = MakeObjectIdentityForRequest(key, tenant_id);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_ACCESSOR);
     MetadataAccessorRW accessor(this, object_id);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_VALIDATE);
     if (!accessor.Exists()) {
         LOG(ERROR) << "key=" << key << ", error=object_not_found";
         return tl::make_unexpected(ErrorCode::OBJECT_NOT_FOUND);
@@ -4525,6 +4578,7 @@ auto MasterService::PutEnd(const UUID& client_id, const ObjectMeta& object_meta,
         return tl::make_unexpected(ErrorCode::ILLEGAL_CLIENT);
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_REPLICA_UPDATE);
     auto is_target_replica = [replica_type](const Replica& replica) {
         if (replica_type == ReplicaType::ALL) {
             return (replica.is_memory_replica() &&
@@ -4601,6 +4655,7 @@ auto MasterService::PutEnd(const UUID& client_id, const ObjectMeta& object_meta,
         metadata.object_checksum = object_meta.object_checksum;
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_QUOTA_AND_OPTIONAL_TASKS);
     auto settle_result =
         SettlePrimaryWriteQuotaIfReady(accessor.GetTenantState(), metadata);
     if (!settle_result) {
@@ -4636,17 +4691,22 @@ auto MasterService::PutEnd(const UUID& client_id, const ObjectMeta& object_meta,
         }
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_PROCESSING_ERASE);
     // If the object is completed, remove it from the processing set.
     if (metadata.AllReplicas(&Replica::fn_is_completed) &&
         accessor.InProcessing()) {
         accessor.EraseFromProcessing();
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_ACCOUNTING);
     SyncCacheTotalAccounting(metadata);
     // TODO: add inc_nof_cache_nums() (ranhaojia)
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_LEASE);
     metadata.GrantReadLease(0);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_EVENT);
     PublishKvStored(key, replica_type, metadata, object_id.tenant_id);
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_END_OPLOG_AND_CLEANUP);
     if (enable_oplog_ && ordered_oplog_writer_) {
         std::string payload = SerializeMetadataForOpLog(metadata);
         auto result = AppendOpLogVisibleBeforeDurable(

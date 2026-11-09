@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "transport/rdma_transport/endpoint_store.h"
+#include "kvtest_benchmark_profile.h"
 
 #include <glog/logging.h>
 
@@ -29,8 +30,13 @@
 namespace mooncake {
 std::shared_ptr<RdmaEndPoint> FIFOEndpointStore::getEndpoint(
     const std::string &peer_nic_path) {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_ENDPOINT_FIFO_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_ENDPOINT_FIFO_LOCK_ACQUIRE);
     RWSpinlock::ReadGuard guard(endpoint_map_lock_);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_ENDPOINT_FIFO_LOOKUP);
     auto iter = endpoint_map_.find(peer_nic_path);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_ENDPOINT_FIFO_RESULT);
     if (iter != endpoint_map_.end()) return iter->second;
     return nullptr;
 }
@@ -195,8 +201,13 @@ void FIFOEndpointStore::testOnlyInsertWaiting(
 
 std::shared_ptr<RdmaEndPoint> SIEVEEndpointStore::getEndpoint(
     const std::string &peer_nic_path) {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_ENDPOINT_SIEVE_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_ENDPOINT_SIEVE_LOCK_ACQUIRE);
     RWSpinlock::ReadGuard guard(endpoint_map_lock_);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_ENDPOINT_SIEVE_LOOKUP);
     auto iter = endpoint_map_.find(peer_nic_path);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_ENDPOINT_SIEVE_RESULT);
     if (iter != endpoint_map_.end()) {
         iter->second.second.store(
             true, std::memory_order_relaxed);  // This is safe within read lock

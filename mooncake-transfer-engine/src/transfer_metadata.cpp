@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "transfer_metadata.h"
+#include "kvtest_benchmark_profile.h"
 
 #include <json/value.h>
 
@@ -1275,8 +1276,13 @@ int TransferMetadata::syncSegmentCache(const std::string &segment_name) {
 std::shared_ptr<TransferMetadata::SegmentDesc>
 TransferMetadata::getSegmentDescByName(const std::string &segment_name,
                                        bool force_update) {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_PREPARE);
     if (globalConfig().metacache && !force_update) {
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_READ_LOCK_ACQUIRE);
         RWSpinlock::ReadGuard guard(segment_lock_);
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_LOOKUP);
         auto iter = segment_name_to_id_map_.find(segment_name);
         if (iter != segment_name_to_id_map_.end())
             return segment_id_to_desc_map_[iter->second];
@@ -1284,7 +1290,9 @@ TransferMetadata::getSegmentDescByName(const std::string &segment_name,
 
     // Check if it's LOCAL_SEGMENT_ID
     {
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_READ_LOCK_ACQUIRE);
         RWSpinlock::ReadGuard guard(segment_lock_);
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_LOOKUP);
         auto iter = segment_name_to_id_map_.find(segment_name);
         if (iter != segment_name_to_id_map_.end() &&
             iter->second == LOCAL_SEGMENT_ID) {
@@ -1293,11 +1301,15 @@ TransferMetadata::getSegmentDescByName(const std::string &segment_name,
     }
 
     // Fetch segment descriptor without holding lock (may involve network I/O)
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_FETCH);
+    kvtest_profile::DetailCount(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_FETCH_COUNT);
     auto segment_desc = this->getSegmentDesc(segment_name);
     if (!segment_desc) return nullptr;
 
     // Update cache with write lock
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_WRITE_LOCK_ACQUIRE);
     RWSpinlock::WriteGuard guard(segment_lock_);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_NAME_LOOKUP);
     auto iter = segment_name_to_id_map_.find(segment_name);
     SegmentID segment_id;
     if (iter != segment_name_to_id_map_.end()) {
@@ -1312,27 +1324,36 @@ TransferMetadata::getSegmentDescByName(const std::string &segment_name,
 
 std::shared_ptr<TransferMetadata::SegmentDesc>
 TransferMetadata::getSegmentDescByID(SegmentID segment_id, bool force_update) {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_ID_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_ID_PREPARE);
     if (segment_id != LOCAL_SEGMENT_ID &&
         (!globalConfig().metacache || force_update)) {
         // Get segment name without holding lock during network I/O
         std::string segment_name;
         {
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_ID_READ_LOCK_ACQUIRE);
             RWSpinlock::ReadGuard guard(segment_lock_);
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_ID_LOOKUP);
             if (!segment_id_to_desc_map_.count(segment_id)) return nullptr;
             segment_name = segment_id_to_desc_map_[segment_id]->name;
         }
 
         // Fetch segment descriptor without holding lock (may involve network
         // I/O)
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_ID_FETCH);
         auto segment_desc = getSegmentDesc(segment_name);
         if (!segment_desc) return nullptr;
 
         // Update cache with write lock
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_ID_WRITE_LOCK_ACQUIRE);
         RWSpinlock::WriteGuard guard(segment_lock_);
         segment_id_to_desc_map_[segment_id] = segment_desc;
         return segment_id_to_desc_map_[segment_id];
     } else {
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_ID_READ_LOCK_ACQUIRE);
         RWSpinlock::ReadGuard guard(segment_lock_);
+        detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_SEGMENT_ID_LOOKUP);
         if (!segment_id_to_desc_map_.count(segment_id)) return nullptr;
         return segment_id_to_desc_map_[segment_id];
     }

@@ -1277,11 +1277,15 @@ std::optional<TransferFuture> TransferSubmitter::submitTransfer(
 std::optional<TransferFuture> TransferSubmitter::submitTransferEngineOperation(
     const AllocatedBuffer::Descriptor& handle, const std::vector<Slice>& slices,
     const TransferRequest::OpCode op_code, uint64_t src_offset) {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_PREPARE_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_PREPARE_VALIDATE);
     if (handle.transport_endpoint_.empty()) {
         LOG(ERROR) << "Transport endpoint is empty for handle with address "
                    << handle.buffer_address_;
         return std::nullopt;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_PREPARE_OPEN_SEGMENT);
     SegmentHandle seg = engine_.openSegment(handle.transport_endpoint_);
 
     if (seg == static_cast<uint64_t>(ERR_INVALID_ARGUMENT)) {
@@ -1291,6 +1295,7 @@ std::optional<TransferFuture> TransferSubmitter::submitTransferEngineOperation(
     }
 
     // Create transfer requests
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_PREPARE_REQUESTS);
     std::vector<TransferRequest> requests;
     requests.reserve(slices.size());
     uint64_t base_address = static_cast<uint64_t>(handle.buffer_address_);
@@ -1310,6 +1315,7 @@ std::optional<TransferFuture> TransferSubmitter::submitTransferEngineOperation(
         offset += slice.size;
         requests.emplace_back(request);
     }
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_TE_PREPARE_SUBMIT);
     return submitTransfer(requests);
 }
 

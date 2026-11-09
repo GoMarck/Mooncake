@@ -1,4 +1,5 @@
 #include "client_buffer.h"
+#include "benchmark_profile.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -86,14 +87,19 @@ ClientBufferAllocator::~ClientBufferAllocator() {
 }
 
 std::optional<BufferHandle> ClientBufferAllocator::allocate(size_t size) {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_BUFFER_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_BUFFER_VALIDATE);
     if (allocator_ == nullptr) {
         return std::nullopt;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_BUFFER_ALLOCATE);
     auto handle = allocator_->allocate(size);
     if (!handle) {
         return std::nullopt;
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_BUFFER_HANDLE_CONSTRUCT);
     return std::make_optional<BufferHandle>(shared_from_this(),
                                             std::move(*handle));
 }

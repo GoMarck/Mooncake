@@ -343,8 +343,12 @@ struct RpcNameTraits<&WrappedMasterService::PollRemoveAll> {
 
 template <auto ServiceMethod, typename ReturnType, typename... Args>
 tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_RPC_TOTAL,
+        kvtest_profile::Stage::D_MC_DETAIL_SHARED_RPC_POOL);
     auto pool = client_accessor_.GetClientPool();
 
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_RPC_METRICS_PREPARE);
     // Increment RPC counter
     if (metrics_) {
         metrics_->rpc_count.inc({RpcNameTraits<ServiceMethod>::value});
@@ -363,8 +367,12 @@ tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
         }
     }
     kvtest_profile::Span benchmark_span(benchmark_stage);
+    detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_RPC_DISPATCH_AND_WAIT);
     auto benchmark_result = async_simple::coro::syncAwait(
         [&]() -> async_simple::coro::Lazy<tl::expected<ReturnType, ErrorCode>> {
+            kvtest_profile::DetailFrame detailFrame(
+                kvtest_profile::Stage::D_MC_DETAIL_SHARED_RPC_COROUTINE_TOTAL,
+                kvtest_profile::Stage::D_MC_DETAIL_SHARED_RPC_COROUTINE_POOL_DISPATCH);
             auto ret = co_await pool->send_request(
                 [&](coro_io::client_reuse_hint,
                     coro_rpc::coro_rpc_client& client) {
@@ -375,7 +383,9 @@ tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
                 LOG(ERROR) << "Client not available";
                 co_return tl::make_unexpected(ErrorCode::RPC_FAIL);
             }
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_RPC_COROUTINE_RESPONSE_WAIT);
             auto result = co_await std::move(ret.value());
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_RPC_COROUTINE_RESULT);
             if (!result) {
                 if (result.error().code == coro_rpc::errc::timed_out) {
                     LOG(ERROR) << "RPC call timed out: " << result.error().msg;

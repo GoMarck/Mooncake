@@ -1,4 +1,5 @@
 #pragma once
+#include "benchmark_profile.h"
 
 #include <algorithm>
 #include <array>
@@ -1320,7 +1321,11 @@ class MasterService {
         // Grant an ordinary read lease with timeout as now() + ttl. Soft-pin
         // lifetime is intentionally independent from reads.
         void GrantReadLease(const uint64_t ttl) const {
+            kvtest_profile::DetailFrame detailFrame(
+                kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_LEASE_TOTAL,
+                kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_LEASE_LOCK_ACQUIRE);
             SpinLocker locker(&lock);
+            detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_LEASE_UPDATE);
             std::chrono::system_clock::time_point now =
                 std::chrono::system_clock::now();
             lease_timeout =
@@ -1775,7 +1780,13 @@ class MasterService {
         MetadataShardAccessorRW(MasterService* master_service,
                                 size_t shard_index)
             : shard_(master_service->metadata_shards_[shard_index]),
-              lock_(&shard_.mutex) {}
+              detailFrame_(
+                  kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_SHARD_RW_TOTAL,
+                  kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_SHARD_RW_LOCK_ACQUIRE),
+              lock_(&shard_.mutex)
+        {
+            detailFrame_.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_SHARD_RW_HELD);
+        }
 
         MetadataShard* operator->() { return &shard_; }
 
@@ -1815,6 +1826,7 @@ class MasterService {
 
        private:
         MetadataShard& shard_;
+        kvtest_profile::DetailFrame detailFrame_;
         SharedMutexLocker lock_;
     };
 
@@ -1824,7 +1836,13 @@ class MasterService {
         MetadataShardAccessorRO(const MasterService* master_service,
                                 size_t shard_index)
             : shard_(master_service->metadata_shards_[shard_index]),
-              lock_(&shard_.mutex, shared_lock) {}
+              detailFrame_(
+                  kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_SHARD_RO_TOTAL,
+                  kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_SHARD_RO_LOCK_ACQUIRE),
+              lock_(&shard_.mutex, shared_lock)
+        {
+            detailFrame_.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_SHARD_RO_HELD);
+        }
 
         const MetadataShard* operator->() const { return &shard_; }
 
@@ -1832,6 +1850,7 @@ class MasterService {
 
        private:
         const MetadataShard& shard_;
+        kvtest_profile::DetailFrame detailFrame_;
         SharedMutexLocker lock_;
     };
 
@@ -2151,21 +2170,35 @@ class MasterService {
               shard_idx_(service_->getMetadataShardIndex(object_id_.tenant_id,
                                                          object_id_.user_key)),
               shard_guard_(service_, shard_idx_),
-              tenant_it_(shard_guard_->tenants.find(object_id_.tenant_id)),
+              tenant_it_(kvtest_profile::DetailMeasure(
+                            kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ACCESSOR_RW_TENANT,
+                            [&]() -> decltype(auto) {
+                                return shard_guard_->tenants.find(object_id_.tenant_id);
+                            })),
               tenant_state_(tenant_it_ == shard_guard_->tenants.end()
                                 ? nullptr
                                 : &tenant_it_->second),
               it_(tenant_state_ == nullptr
                       ? ObjectMetadataIterator{}
-                      : tenant_state_->metadata.find(object_id_.user_key)),
+                      : kvtest_profile::DetailMeasure(
+                            kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ACCESSOR_RW_METADATA,
+                            [&]() -> decltype(auto) {
+                                return tenant_state_->metadata.find(object_id_.user_key);
+                            })),
               processing_it_(tenant_state_ == nullptr
                                  ? ProcessingIterator{}
-                                 : tenant_state_->processing_keys.find(
-                                       object_id_.user_key)),
+                                 : kvtest_profile::DetailMeasure(
+                            kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ACCESSOR_RW_PROCESSING,
+                            [&]() -> decltype(auto) {
+                                return tenant_state_->processing_keys.find( object_id_.user_key);
+                            })),
               replication_task_it_(tenant_state_ == nullptr
                                        ? ReplicationTaskIterator{}
-                                       : tenant_state_->replication_tasks.find(
-                                             object_id_.user_key)) {
+                                       : kvtest_profile::DetailMeasure(
+                            kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ACCESSOR_RW_REPLICATION,
+                            [&]() -> decltype(auto) {
+                                return tenant_state_->replication_tasks.find( object_id_.user_key);
+                            })) {
             if (tenant_state_ != nullptr) {
                 service_->GetBoundTenantQuotaHandle(*tenant_state_);
             }
@@ -2387,17 +2420,28 @@ class MasterService {
               shard_idx_(service_->getMetadataShardIndex(object_id_.tenant_id,
                                                          object_id_.user_key)),
               shard_guard_(service_, shard_idx_),
-              tenant_it_(shard_guard_->tenants.find(object_id_.tenant_id)),
+              tenant_it_(kvtest_profile::DetailMeasure(
+                            kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ACCESSOR_RO_TENANT,
+                            [&]() -> decltype(auto) {
+                                return shard_guard_->tenants.find(object_id_.tenant_id);
+                            })),
               tenant_state_(tenant_it_ == shard_guard_->tenants.end()
                                 ? nullptr
                                 : &tenant_it_->second),
               it_(tenant_state_ == nullptr
                       ? ObjectMetadataConstIterator{}
-                      : tenant_state_->metadata.find(object_id_.user_key)),
+                      : kvtest_profile::DetailMeasure(
+                            kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ACCESSOR_RO_METADATA,
+                            [&]() -> decltype(auto) {
+                                return tenant_state_->metadata.find(object_id_.user_key);
+                            })),
               processing_it_(tenant_state_ == nullptr
                                  ? ProcessingConstIterator{}
-                                 : tenant_state_->processing_keys.find(
-                                       object_id_.user_key)) {}
+                                 : kvtest_profile::DetailMeasure(
+                            kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_ACCESSOR_RO_PROCESSING,
+                            [&]() -> decltype(auto) {
+                                return tenant_state_->processing_keys.find( object_id_.user_key);
+                            })) {}
 
         // Check if metadata exists
         bool Exists() const NO_THREAD_SAFETY_ANALYSIS {
