@@ -542,6 +542,10 @@ endif()
 install(TARGETS mooncake_master DESTINATION bin)
 
 # Store Client executable.
+add_executable(mooncake_store_memory_target EXCLUDE_FROM_ALL
+               store_memory_target.cpp)
+target_link_libraries(mooncake_store_memory_target PRIVATE mooncake_store)
+
 add_executable(mooncake_client real_client_main.cpp)
 set_target_properties(mooncake_client PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(
