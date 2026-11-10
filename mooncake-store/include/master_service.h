@@ -1786,6 +1786,10 @@ class MasterService {
               lock_(&shard_.mutex)
         {
             detailFrame_.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_SHARD_RW_HELD);
+            if (detailFrame_.Sampled()) {
+                detailFrame_.Observe(kvtest_profile::DetailAttribute::SHARD_INDEX, shard_index);
+                detailFrame_.Observe(kvtest_profile::DetailAttribute::ITEM_COUNT, shard_.tenants.size());
+            }
         }
 
         MetadataShard* operator->() { return &shard_; }
@@ -1842,6 +1846,10 @@ class MasterService {
               lock_(&shard_.mutex, shared_lock)
         {
             detailFrame_.Next(kvtest_profile::Stage::D_MC_DETAIL_SHARED_MASTER_SHARD_RO_HELD);
+            if (detailFrame_.Sampled()) {
+                detailFrame_.Observe(kvtest_profile::DetailAttribute::SHARD_INDEX, shard_index);
+                detailFrame_.Observe(kvtest_profile::DetailAttribute::ITEM_COUNT, shard_.tenants.size());
+            }
         }
 
         const MetadataShard* operator->() const { return &shard_; }

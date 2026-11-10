@@ -3644,6 +3644,12 @@ auto MasterService::GetReplicaList(const std::string& key,
     {
         detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_ACCESSOR);
         MetadataAccessorRO accessor(this, object_id);
+        if (detailFrame.Sampled() && accessor.GetTenantState() != nullptr) {
+            const auto& table = accessor.GetTenantState()->metadata;
+            detailFrame.Observe(kvtest_profile::DetailAttribute::SHARD_SIZE, table.size());
+            detailFrame.Observe(kvtest_profile::DetailAttribute::BUCKET_COUNT, table.bucket_count());
+            detailFrame.Observe(kvtest_profile::DetailAttribute::KEY_BYTES, key.size());
+        }
 
         detailFrame.Next(kvtest_profile::Stage::D_MC_DETAIL_GET_MASTER_VALIDATE);
         MasterMetricManager::instance().inc_total_get_nums();
@@ -4048,6 +4054,11 @@ auto MasterService::AllocateAndInsertMetadata(
         kvtest_profile::Stage::D_MC_DETAIL_SET_MASTER_ALLOCATE_TENANT_AND_CHECKS);
     const auto deadline_to_index = committed_soft_pin_timeout;
     auto& tenant_state = GetOrCreateTenantState(shard.get(), tenant_id);
+    if (detailFrame.Sampled()) {
+        detailFrame.Observe(kvtest_profile::DetailAttribute::SHARD_SIZE, tenant_state.metadata.size());
+        detailFrame.Observe(kvtest_profile::DetailAttribute::BUCKET_COUNT, tenant_state.metadata.bucket_count());
+        detailFrame.Observe(kvtest_profile::DetailAttribute::KEY_BYTES, key.size());
+    }
     if (tenant_state.metadata.contains(key)) {
         LOG(INFO) << "key=" << key << ", info=object_already_exists";
         return tl::make_unexpected(ErrorCode::OBJECT_ALREADY_EXISTS);
@@ -4571,6 +4582,12 @@ auto MasterService::PutEnd(const UUID& client_id, const ObjectMeta& object_meta,
         return tl::make_unexpected(ErrorCode::OBJECT_NOT_FOUND);
     }
 
+    if (detailFrame.Sampled()) {
+        const auto& table = accessor.GetTenantState().metadata;
+        detailFrame.Observe(kvtest_profile::DetailAttribute::SHARD_SIZE, table.size());
+        detailFrame.Observe(kvtest_profile::DetailAttribute::BUCKET_COUNT, table.bucket_count());
+        detailFrame.Observe(kvtest_profile::DetailAttribute::KEY_BYTES, key.size());
+    }
     auto& metadata = accessor.Get();
     if (client_id != metadata.client_id) {
         LOG(ERROR) << "Illegal client " << client_id << " to PutEnd key " << key
