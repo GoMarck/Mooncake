@@ -8,6 +8,7 @@
 #include <ylt/util/tl/expected.hpp>
 
 #include "types.h"
+#include "benchmark_profile.h"
 #include "utils/scoped_vlog_timer.h"
 
 namespace mooncake {
@@ -43,12 +44,22 @@ auto execute_rpc(std::string_view rpc_name, RpcCallable&& rpc_call,
                  IncReqMetric&& inc_req_metric, IncFailMetric&& inc_fail_metric)
     requires TlExpected<std::invoke_result_t<RpcCallable>>
 {
+    kvtest_profile::DetailFrame frame(
+        kvtest_profile::Stage::D_MC_RPC_SERVER_TOTAL,
+        kvtest_profile::Stage::D_MC_RPC_SERVER_PREPARE);
+    if (frame.Sampled()) {
+        frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
+                      kvtest_profile::RpcMethodId(rpc_name.data()));
+    }
     ScopedVLogTimer timer(1, rpc_name.data());
     log_request(timer);
 
+    frame.Next(kvtest_profile::Stage::D_MC_RPC_SERVER_REQUEST_METRICS);
     inc_req_metric();
 
+    frame.Next(kvtest_profile::Stage::D_MC_RPC_SERVER_BUSINESS);
     auto result = rpc_call();
+    frame.Next(kvtest_profile::Stage::D_MC_RPC_SERVER_RESULT_METRICS);
     if (!result.has_value()) {
         inc_fail_metric();
     }

@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.18)
+project(coro_rpc_isolation_bench LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Threads REQUIRED)
+if(NOT EXISTS "${YLT_INCLUDE_DIR}/ylt/coro_rpc/coro_rpc_client.hpp")
+    message(FATAL_ERROR "YLT_INCLUDE_DIR must refer to the existing Mooncake dependency headers")
+endif()
+add_executable(coro_rpc_isolation_bench coro_rpc_isolation_bench.cpp)
+target_include_directories(coro_rpc_isolation_bench PRIVATE "${YLT_INCLUDE_DIR}"
+    "${YLT_INCLUDE_DIR}/ylt/thirdparty" "${YLT_INCLUDE_DIR}/ylt/standalone")
+target_link_libraries(coro_rpc_isolation_bench PRIVATE Threads::Threads)
